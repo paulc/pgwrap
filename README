@@ -1,0 +1,16 @@
+
+
+    pgwrap - simple PostgreSQL database wrapper
+    -------------------------------------------
+
+    The 'pgwrap' module provides a simple wrapper over psycopg2 supporting a
+    Python API for common sql functions.
+
+    This is not intended to 
+
+    >>> from pgwrap import connect,query
+    >>> connect(url="postgres://localhost")
+    >>> query("select version")
+    ...
+
+
