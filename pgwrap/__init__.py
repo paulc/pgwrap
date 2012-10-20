@@ -7,7 +7,7 @@ from db import (connect,cursor,execute,
                 check_table,drop_table,create_table,
                 init_db)
 
-version = "0.1"
+version = "0.3"
 description = """
 
     pgwrap - simple PostgreSQL database wrapper
@@ -43,5 +43,11 @@ description = """
 
     The module wraps the excellent 'psycopg2' library and most of the 
     functionality is provided by this behind the scenes.
+
+    Changelog:
+
+        0.1     19-10-2012  Initial import
+        0.2     10-10-2012  Remove psycopg2 dep in setup.py
+        0.3     10-10-2012  Remove hstore default for cursor
 
 """

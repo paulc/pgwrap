@@ -49,8 +49,7 @@ def _where(where):
         'op' is looked up in '_operators' hash table which
         maps common opeartors (eg '__lt' to '<'). If the 
         operator is not found it is passed through directly
-        allowing other operators to be specified directly
-        (eg __? for hstore contains)
+        allowing other operators to be specified directly.
     """
     if where: 
         _where = []
@@ -91,7 +90,7 @@ def _limit(limit):
 
 class cursor(object):
 
-    def __init__(self,hstore=True,cursor_factory=psycopg2.extras.RealDictCursor):
+    def __init__(self,hstore=False,cursor_factory=psycopg2.extras.RealDictCursor):
         self.hstore = hstore
         self.cursor_factory = cursor_factory
         if not _pool:
@@ -204,8 +203,8 @@ def execute(sql,params=None):
 
 def query(sql,params=None):
     """
-        >>> r = query('select name,active,properties FROM doctest_t1 ORDER BY name')
-        >>> r[0] == {'name':'aaaaa','active':True,'properties':{'key':'0'}}
+        >>> r = query('select name,active FROM doctest_t1 ORDER BY name')
+        >>> r[0] == {'name':'aaaaa','active':True}
         True
         >>> len(r)
         10
@@ -215,8 +214,8 @@ def query(sql,params=None):
 
 def query_one(sql,params=None):
     """
-        >>> r = query_one('select name,active,properties FROM doctest_t1 WHERE name = %s',('aaaaa',))
-        >>> r == {'name':'aaaaa','active':True,'properties':{'key':'0'}}
+        >>> r = query_one('select name,active FROM doctest_t1 WHERE name = %s',('aaaaa',))
+        >>> r == {'name':'aaaaa','active':True}
         True
     """
     with cursor() as c:
@@ -224,8 +223,8 @@ def query_one(sql,params=None):
 
 def query_dict(sql,key,params=None):
     """
-        >>> r = query_dict('select name,active,properties FROM doctest_t1 ORDER BY name','name')
-        >>> r['aaaaa'] == {'name':'aaaaa','active':True,'properties':{'key':'0'}}
+        >>> r = query_dict('select name,active FROM doctest_t1 ORDER BY name','name')
+        >>> r['aaaaa'] == {'name':'aaaaa','active':True}
         True
         >>> sorted(r.keys())
         ['aaaaa', 'bbbbb', 'ccccc', 'ddddd', 'eeeee', 'fffff', 'ggggg', 'hhhhh', 'iiiii', 'jjjjj']
@@ -237,16 +236,13 @@ def select(table,where=None,order=None,columns=None,limit=None):
     """
         >>> select('doctest_t1') == query('SELECT * FROM doctest_t1')
         True
-        >>> select('doctest_t1',columns=('name','properties'),order=('name',),limit=2)
-        [{'name': 'aaaaa', 'properties': {'key': '0'}}, {'name': 'bbbbb', 'properties': {'key': '1'}}]
+        >>> select('doctest_t1',columns=('name',),order=('name',),limit=2)
+        [{'name': 'aaaaa'}, {'name': 'bbbbb'}]
         >>> select('doctest_t1',where={'name__in':('aaaaa','bbbbb')},order=('name__desc',)) == \
                 query("SELECT * FROM doctest_t1 WHERE name IN ('aaaaa','bbbbb') ORDER BY name DESC")
         True
-        >>> select_one('doctest_t1',columns=('name',),where={'properties__@>':{'key': '1'}})
+        >>> select_one('doctest_t1',columns=('name',),where={'name__in':('bbbbb',)})
         {'name': 'bbbbb'}
-        >>> r = select('doctest_t1',columns=(("properties->'key'","key"),),order=("properties->'key'__desc",))
-        >>> [ x['key'] for x in r ]
-        ['9', '8', '7', '6', '5', '4', '3', '2', '1', '0']
     """
     with cursor() as c:
         return c.select(table,where,order,columns,limit)
@@ -299,14 +295,14 @@ def join_dict(t1,t2,key,where=None,on=None,order=None,columns=None,limit=None):
 
 def insert(table,values,returning=None):
     """
-        >>> insert('doctest_t1',{'name':'xxx','properties':{'a':'aa'}})
+        >>> insert('doctest_t1',{'name':'xxx'})
         1
-        >>> insert('doctest_t1',{'name':'yyy','properties':{'a':'bb'}},'name')
+        >>> insert('doctest_t1',{'name':'yyy'},'name')
         {'name': 'yyy'}
-        >>> insert('doctest_t1',values={'name':'zzz','properties':{'a':'cc'}},returning='name')
+        >>> insert('doctest_t1',values={'name':'zzz'},returning='name')
         {'name': 'zzz'}
-        >>> select('doctest_t1',where={'properties__?':'a'},order=('name',),columns=('properties',))
-        [{'properties': {'a': 'aa'}}, {'properties': {'a': 'bb'}}, {'properties': {'a': 'cc'}}]
+        >>> select('doctest_t1',where={'name__~':'[xyz]+'},order=('name',),columns=('name',))
+        [{'name': 'xxx'}, {'name': 'yyy'}, {'name': 'zzz'}]
         >>> delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')})
         3
     """
@@ -339,11 +335,6 @@ def update(table,values,where=None,returning=None):
         [{'count': 6}]
         >>> update('doctest_t1',values={'count__sub':6},where={'name':'yyy'},returning='count')
         [{'count': 0}]
-        >>> update('doctest_t1',values={'properties':{'x':'1','y':'2','z':'3'}},where={'name':'yyy'},returning='name')
-        [{'name': 'yyy'}]
-        >>> select_one('doctest_t1',where={'name':'yyy'},columns=('properties',))['properties'] == \
-                {'x':'1','y':'2','z':'3'}
-        True
         >>> delete('doctest_t1',{'name':'yyy'})
         1
     """
@@ -392,27 +383,25 @@ def init_db(tables):
 
 if __name__ == '__main__':
     import doctest,sys
-    if sys.argv.count('--doctest'):
-        tables = (('doctest_t1','''id SERIAL PRIMARY KEY,
-                                   name TEXT NOT NULL,
-                                   count INTEGER NOT NULL DEFAULT 0,
-                                   active BOOLEAN NOT NULL DEFAULT true,
-                                   properties HSTORE NOT NULL DEFAULT ''::hstore'''),
-                  ('doctest_t2','''id SERIAL PRIMARY KEY,
-                                   value TEXT NOT NULL,
-                                   doctest_t1_id INTEGER NOT NULL REFERENCES doctest_t1(id)'''),
-                 )
-        # Connect to database and create test tables
-        connect('postgres://localhost/')
-        drop_table('doctest_t1')
-        drop_table('doctest_t2')
-        init_db(tables)
-        for i in range(10):
-            id = insert('doctest_t1',{'name':chr(97+i)*5,'properties':{'key':str(i)}},returning='id')['id']
-            _ = insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
-        # Run tests
-        doctest.testmod(optionflags=doctest.ELLIPSIS)
-        # Drop tables
-        drop_table('doctest_t1')
-        drop_table('doctest_t2')
+    tables = (('doctest_t1','''id SERIAL PRIMARY KEY,
+                               name TEXT NOT NULL,
+                               count INTEGER NOT NULL DEFAULT 0,
+                               active BOOLEAN NOT NULL DEFAULT true'''),
+              ('doctest_t2','''id SERIAL PRIMARY KEY,
+                               value TEXT NOT NULL,
+                               doctest_t1_id INTEGER NOT NULL REFERENCES doctest_t1(id)'''),
+             )
+    # Connect to database and create test tables
+    connect('postgres://localhost/')
+    drop_table('doctest_t1')
+    drop_table('doctest_t2')
+    init_db(tables)
+    for i in range(10):
+        id = insert('doctest_t1',{'name':chr(97+i)*5},returning='id')['id']
+        _ = insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
+    # Run tests
+    doctest.testmod(optionflags=doctest.ELLIPSIS)
+    # Drop tables
+    drop_table('doctest_t1')
+    drop_table('doctest_t2')
 

@@ -5,7 +5,7 @@ try:
 except ImportError:
     from distutils.core import Command,setup
 
-version = "0.2",
+version = "0.3",
 long_description = file("README").read()
 
 class GenerateReadme(Command):

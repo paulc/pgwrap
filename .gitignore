@@ -2,6 +2,6 @@ venv
 *.swp
 *.pyc
 *~
-gmail.egg-info
+*.egg-info
 build
 dist
