@@ -6,6 +6,7 @@ except ImportError:
     from distutils.core import Command,setup
 
 version = "0.3",
+description = 'Simple PostgreSQL database wrapper - provides wrapper over psycopg2 supporting a Python API for common sql functions'
 long_description = file("README").read()
 
 class GenerateReadme(Command):
@@ -19,8 +20,8 @@ class GenerateReadme(Command):
         open("README","w").write(long_description)
 
 setup(name='pgwrap',
-      version = "0.2",
-      description = 'Simple PostgreSQL database wrapper - provides wrapper over psycopg2 supporting a Python API for common sql functions',
+      version = version,
+      description = description,
       long_description = long_description,
       author = 'Paul Chakravarti',
       author_email = 'paul.chakravarti@gmail.com',
