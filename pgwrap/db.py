@@ -1,8 +1,13 @@
 
-import os,urlparse
-import psycopg2,psycopg2.extras,psycopg2.pool
+import logging,os,time,urlparse
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 
 _pool = None
+_hstore = False
+_log = False
+_log_generator = lambda cursor : cursor.query
 
 _operators = { 'eq'     : '=',
                'lt'     : '<', 
@@ -20,6 +25,23 @@ _update_operators = { ''        : "%(field)s = %%(%(key)s)s",
                       'func'    : "%(field)s = %(val)s",
                     }
 
+def enable_logging(logobj,generator=None):
+    global _log, _log_generator
+    _log = logobj
+    if generator:
+        _log_generator = generator
+
+def enable_hstore():
+    global _hstore
+    _hstore = True
+
+def _write_log(cursor):
+    msg = _log_generator(cursor)
+    if msg:
+        if isinstance(_log,logging.Logger):
+            _log.debug(msg)
+        else:
+            _log.write(msg + os.linesep)
 
 def connect(url=None,min=1,max=5):
     """
@@ -30,12 +52,21 @@ def connect(url=None,min=1,max=5):
         params = urlparse.urlparse(url or 
                                    os.environ.get('DATABASE_URL') or 
                                    'postgres://localhost/')
-        _pool = psycopg2.pool.ThreadedConnectionPool(min,max,
-                                                     database=params.path[1:],
-                                                     user=params.username,
-                                                     password=params.password,
-                                                     host=params.hostname,
-                                                     port=params.port)
+        _pool = ThreadedConnectionPool(min,max,
+                                       database=params.path[1:],
+                                       user=params.username,
+                                       password=params.password,
+                                       host=params.hostname,
+                                       port=params.port,
+                )
+
+def shutdown():
+    """
+        Shutdown connection pool
+    """
+    global _pool
+    _pool.closeall()
+    _pool = None
     
 def _where(where):
     """
@@ -72,7 +103,7 @@ def _order(order):
 
 def _columns(columns):
     if columns:
-        return ",".join([(c if isinstance(c,(str,unicode)) else "%s AS %s" % c) for c in columns])
+        return ", ".join([(c if isinstance(c,(str,unicode)) else "%s AS %s" % c) for c in columns])
     else:
         return '*'
 
@@ -88,11 +119,26 @@ def _limit(limit):
     else:
         return ''
 
+def _offset(offset):
+    if offset:
+        return ' OFFSET %d' % offset
+    else:
+        return ''
+
+def _update(update):
+    if update:
+        return ' FOR UPDATE'
+    else:
+        return ''
+
 class cursor(object):
 
-    def __init__(self,hstore=False,cursor_factory=psycopg2.extras.RealDictCursor):
-        self.hstore = hstore
-        self.cursor_factory = cursor_factory
+    def __init__(self,hstore=False,cursor_factory=RealDictCursor):
+        self.hstore = _hstore or hstore
+        if cursor_factory:
+            self.cursor_factory = cursor_factory
+        else:
+            self.cursor_factory = psycopg2.extensions.cursor
         if not _pool:
             raise ValueError("No database pool")
 
@@ -114,16 +160,32 @@ class cursor(object):
     def rollback(self):
         self.connection.rollback()
 
+    def callproc(self,proc,params=None):
+        if _log:
+            try:
+                return self.cursor.callproc(proc,params)
+            finally:
+                _write_log(self.cursor)
+        else:
+            return self.cursor.callproc(proc,params)
+
     def execute(self,sql,params=None):
-        self.cursor.execute(sql,params)
-        return self.cursor.rowcount
+        if _log:
+            try:
+                self.cursor.execute(sql,params)
+                return self.cursor.rowcount
+            finally:
+                _write_log(self.cursor)
+        else:
+            self.cursor.execute(sql,params)
+            return self.cursor.rowcount
 
     def query(self,sql,params=None):
-        self.cursor.execute(sql,params)
+        self.execute(sql,params)
         return self.cursor.fetchall()
 
     def query_one(self,sql,params=None):
-        self.cursor.execute(sql,params)
+        self.execute(sql,params)
         return self.cursor.fetchone()
 
     def query_dict(self,sql,key,params=None):
@@ -132,32 +194,35 @@ class cursor(object):
             _d[row[key]] = row
         return _d
 
-    def select(self,table,where=None,order=None,columns=None,limit=None):
-        sql = 'SELECT %s FROM %s' % (_columns(columns),table) + _where(where) + _order(order) + _limit(limit)
-        return self.query(sql,where)
+    def _build_select(self,table,where,order,columns,limit,offset,update):
+        return 'SELECT %s FROM %s' % (_columns(columns),table) \
+                + _where(where) + _order(order) + _limit(limit) \
+                + _offset(offset) + _update(update)
 
-    def select_one(self,table,where=None,order=None,columns=None,limit=None):
-        sql = 'SELECT %s FROM %s' % (_columns(columns),table) + _where(where) + _order(order) + _limit(limit)
-        return self.query_one(sql,where)
+    def select(self,table,where=None,order=None,columns=None,limit=None,offset=None,update=False):
+        return self.query(self._build_select(table,where,order,columns,limit,offset,update),where)
 
-    def select_dict(self,table,key,where=None,order=None,columns=None,limit=None):
-        sql = 'SELECT %s FROM %s' % (_columns(columns),table) + _where(where) + _order(order) + _limit(limit)
-        return self.query_dict(sql,key,where)
+    def select_one(self,table,where=None,order=None,columns=None,limit=None,offset=None,update=False):
+        return self.query_one(self._build_select(table,where,order,columns,limit,offset,update),where)
 
-    def join(self,t1,t2,where=None,on=None,order=None,columns=None,limit=None):
-        sql = 'select %s from %s join %s on (%s)' % (_columns(columns),t1,t2,_on((t1,t2),on)) \
-                                + _where(where) + _order(order) + _limit(limit)
-        return self.query(sql,where)
+    def select_dict(self,table,key,where=None,order=None,columns=None,limit=None,offset=None,update=False):
+        return self.query_dict(self._build_select(table,where,order,columns,limit,offset,update),key,where)
 
-    def join_one(self,t1,t2,where=None,on=None,order=None,columns=None,limit=None):
-        sql = 'select %s from %s join %s on (%s)' % (_columns(columns),t1,t2,_on((t1,t2),on)) \
-                                + _where(where) + _order(order) + _limit(limit)
-        return self.query_one(sql,where)
+    def _build_join(self,tables,where,on,order,columns,limit,offset):
+        on = on or [ None ] * len(tables)
+        return 'SELECT %s FROM %s ' % (_columns(columns),tables[0]) + \
+                                       " ".join([ 'JOIN %s ON %s' % (tables[i],_on((tables[0],tables[i]),on[i-1])) 
+                                                        for i in range(1,len(tables)) ]) + \
+                                        _where(where) + _order(order) + _limit(limit) + _offset(offset)
 
-    def join_dict(self,t1,t2,key,where=None,on=None,order=None,columns=None,limit=None):
-        sql = 'select %s from %s join %s on (%s)' % (_columns(columns),t1,t2,_on((t1,t2),on)) \
-                                + _where(where) + _order(order) + _limit(limit)
-        return self.query_dict(sql,key,where)
+    def join(self,tables,where=None,on=None,order=None,columns=None,limit=None,offset=None):
+        return self.query(self._build_join(tables,where,on,order,columns,limit,offset),where)
+
+    def join_one(self,tables,where=None,on=None,order=None,columns=None,limit=None,offset=None):
+        return self.query_one(self._build_join(tables,where,on,order,columns,limit,offset),where)
+
+    def join_dict(self,tables,key,where=None,on=None,order=None,columns=None,limit=None,offset=None):
+        return self.query_dict(self._build_join(tables,where,on,order,columns,limit,offset),key,where)
 
     def insert(self,table,values,returning=None):
         _values = [ '%%(%s)s' % v for v in values.keys() ]
@@ -191,12 +256,18 @@ class cursor(object):
         else:
             return self.execute(sql)
 
+def callproc(self,proc,params=None):
+    with cursor() as c:
+        return c.callproc(sql,params)
+
 def execute(sql,params=None):
     """
         >>> execute("INSERT INTO doctest_t1 (name) VALUES ('xxx')")
         1
         >>> execute("DELETE FROM doctest_t1 WHERE name = 'xxx'")
         1
+        >>> execute("DELETE FROM doctest_t1 WHERE name = 'xxx'")
+        0
     """
     with cursor() as c:
         return c.execute(sql,params)
@@ -232,7 +303,7 @@ def query_dict(sql,key,params=None):
     with cursor() as c:
         return c.query_dict(sql,key,params)
 
-def select(table,where=None,order=None,columns=None,limit=None):
+def select(table,where=None,order=None,columns=None,limit=None,update=False):
     """
         >>> select('doctest_t1') == query('SELECT * FROM doctest_t1')
         True
@@ -245,9 +316,9 @@ def select(table,where=None,order=None,columns=None,limit=None):
         {'name': 'bbbbb'}
     """
     with cursor() as c:
-        return c.select(table,where,order,columns,limit)
+        return c.select(table,where,order,columns,limit,update)
 
-def select_one(table,where=None,order=None,columns=None,limit=None):
+def select_one(table,where=None,order=None,columns=None,limit=None,update=False):
     """
         >>> select_one('doctest_t1',order=('name',),columns=('name',))
         {'name': 'aaaaa'}
@@ -255,43 +326,46 @@ def select_one(table,where=None,order=None,columns=None,limit=None):
         {'_name': 'aaaaa'}
     """
     with cursor() as c:
-        return c.select_one(table,where,order,columns,limit)
+        return c.select_one(table,where,order,columns,limit,update)
 
-def select_dict(table,key,where=None,order=None,columns=None,limit=None):
+def select_dict(table,key,where=None,order=None,columns=None,limit=None,update=False):
     """
         >>> select_dict('doctest_t1','name',columns=('name',),order=('name',),limit=2)
         {'aaaaa': {'name': 'aaaaa'}, 'bbbbb': {'name': 'bbbbb'}}
     """
     with cursor() as c:
-        return c.select_dict(table,key,where,order,columns,limit)
+        return c.select_dict(table,key,where,order,columns,limit,update)
 
-def join(t1,t2,where=None,on=None,order=None,columns=None,limit=None):
+def join(tables,where=None,on=None,order=None,columns=None,limit=None):
     """
-        >>> join('doctest_t1','doctest_t2',columns=('name','value'),
+        >>> join(('doctest_t1','doctest_t2'),columns=('name','value'),
         ...             where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
         ...             order=('name',),limit=2)
         [{'name': 'aaaaa', 'value': 'aa'}, {'name': 'bbbbb', 'value': 'bb'}]
+        >>> join(('doctest_t1','doctest_t2'),on=[('doctest_t1.id','doctest_t2.doctest_t1_id')]) \
+                        == join(('doctest_t1','doctest_t2'))
+        True
     """
     with cursor() as c:
-        return c.join(t1,t2,where,on,order,columns,limit)
+        return c.join(tables,where,on,order,columns,limit)
 
-def join_one(t1,t2,where=None,on=None,order=None,columns=None,limit=None):
+def join_one(tables,where=None,on=None,order=None,columns=None,limit=None):
     """
-        >>> join('doctest_t1','doctest_t2',columns=('name','value'),where={'name':'aaaaa'})
+        >>> join(('doctest_t1','doctest_t2'),columns=('name','value'),where={'name':'aaaaa'})
         [{'name': 'aaaaa', 'value': 'aa'}]
     """
     with cursor() as c:
-        return c.join_one(t1,t2,where,on,order,columns,limit)
+        return c.join_one(tables,where,on,order,columns,limit)
 
-def join_dict(t1,t2,key,where=None,on=None,order=None,columns=None,limit=None):
+def join_dict(tables,key,where=None,on=None,order=None,columns=None,limit=None):
     """
-        >>> join_dict('doctest_t1','doctest_t2','name',columns=('name','value'),
+        >>> join_dict(('doctest_t1','doctest_t2'),'name',columns=('name','value'),
         ...             where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
         ...             order=('name',),limit=2)
         {'aaaaa': {'name': 'aaaaa', 'value': 'aa'}, 'bbbbb': {'name': 'bbbbb', 'value': 'bb'}}
     """
     with cursor() as c:
-        return c.join_dict(t1,t2,key,where,on,order,columns,limit)
+        return c.join_dict(tables,key,where,on,order,columns,limit)
 
 def insert(table,values,returning=None):
     """
@@ -382,7 +456,7 @@ def init_db(tables):
         create_table(name,schema)
 
 if __name__ == '__main__':
-    import doctest,sys
+    import code,doctest,sys
     tables = (('doctest_t1','''id SERIAL PRIMARY KEY,
                                name TEXT NOT NULL,
                                count INTEGER NOT NULL DEFAULT 0,
@@ -400,7 +474,11 @@ if __name__ == '__main__':
         id = insert('doctest_t1',{'name':chr(97+i)*5},returning='id')['id']
         _ = insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
     # Run tests
-    doctest.testmod(optionflags=doctest.ELLIPSIS)
+    if sys.argv.count('--interact'):
+        enable_logging(sys.stdout)
+        code.interact(local=locals())
+    else:
+        doctest.testmod(optionflags=doctest.ELLIPSIS)
     # Drop tables
     drop_table('doctest_t1')
     drop_table('doctest_t2')

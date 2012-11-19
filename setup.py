@@ -10,13 +10,13 @@ description = 'Simple PostgreSQL database wrapper - provides wrapper over psycop
 long_description = file("README").read()
 
 class GenerateReadme(Command):
-    description = "Generates README file from long_description"
+    description = "Generates README file"
     user_options = []
     def initialize_options(self): pass
     def finalize_options(self): pass
     def run(self):
-        import pgwrap
-        long_description = pgwrap.description
+        import pgwrap,textwrap
+        long_description = textwrap.dedent(pgwrap.__doc__)
         open("README","w").write(long_description)
 
 setup(name='pgwrap',
