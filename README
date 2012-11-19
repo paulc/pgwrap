@@ -29,8 +29,11 @@ Basic usage
 -----------
 
 >>> import pgwrap
->>> pgwrap.connect(url="postgres://localhost")
->>> pgwrap.query_one("select version()")
+>>> pgwrap.connect(url='postgres://localhost')
+>>> with pgwrap.cursor() as c:
+...     c.query('select version()')
+[{'version': 'PostgreSQL...'}]
+>>> pgwrap.query_one('select version()')
 {'version': 'PostgreSQL...'}
 
 Cursor
@@ -39,9 +42,9 @@ Cursor
 The module provides a cursor context handler wrapping the psycopg2 cursor.
 
 Entering the cursor context handler will obtain a connection from the
-connection pool and create a cursor using this connection. The transaction 
-will be committed, cursor closed, and the connection released back to the
-connection pool on exiting the context handler.
+connection pool and create a cursor using this connection. When the context
+handler is exited the associated transaction will be committed, cursor
+closed, and the connection released back to the connection pool.
 
 The cursor object uses the psycopg2 'RealDictCursor' by default (which
 returns rows as a python dictionary) however this can be overridden by
@@ -49,7 +52,7 @@ providing a 'cursor_factory' parameter to the constructor.
 
 >>> with pgwap.cursor() as c:
 ...     c.query('select version()')
-{'version': 'PostgreSQL...'}
+[{'version': 'PostgreSQL...'}]
 
 The cursor context provides the following basic methods:
 
@@ -63,11 +66,11 @@ The cursor context provides the following basic methods:
                       context handler)
     rollback        - Rollback transaction
 
-In addition the cursor can use the SQL API methods described access the
-underlying psycopg2 cursor (via the self.cursor attribute).
+In addition the cursor can use the SQL API methods described below or
+access the underlying psycopg2 cursor (via the self.cursor attribute).
 
 The cursor methods are also available as standalone functions which
-create an implicit cursor object.
+run inside an implicit cursor object.
 
 SQL API
 -------
@@ -84,7 +87,7 @@ operations.  The basic methods provides are:
     delete          - SQL delete
 
 The methods can be parameterised to customise the associated query 
-(see module docs for detail): 
+(see db module docs for detail): 
 
     where           - 'where' clause as dict (column operators can be 
                       specified using the colunm__operator format) 
@@ -115,6 +118,25 @@ The methods can be parameterised to customise the associated query
 
 The methods are also available as standalone functions which create an 
 implicit cursor object.
+
+Basic usage:
+
+    >>> create_table('t1','id serial,name text,count int')
+    >>> create_table('t2','id serial,t1_id int,value text')
+    >>> enable_logging(sys.stdout)
+    >>> insert('t1',{'name':'abc'},returning='id,name')
+    INSERT INTO t1 (name) VALUES ('abc') RETURNING id,name
+    {'id': 1, 'name': 'abc'}
+    >>> insert('t2',{'t1_id':1,'value':'t2'})
+    >>> select('t1')
+    SELECT * FROM t1
+    []
+    >>> select_one('t1',where={'name':'abc'},columns=('name','value'))
+    >>> join('t1','t2',where={'t1.id__in':(1,2,3)},columns=('t1.id','t2.name'))
+    >>> insert('t1',{'name':'abc'},returning='id')
+    >>> update('t1',{'name':'xyz'},where={'name':'abc'})
+    >>> update('t1',{'count__func':'count + 1'},where={'count__lt':10},returning="id,count")
+
 
 
 Logging
