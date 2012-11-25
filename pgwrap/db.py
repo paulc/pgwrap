@@ -285,42 +285,41 @@ class cursor(object):
         else:
             return self.execute(sql)
 
-def check_table(t):
-    """
-        >>> check_table('doctest_t1')
-        True
-        >>> check_table('nonexistent')
-        False
-    """
-    _sql = 'SELECT tablename FROM pg_tables WHERE schemaname=%s and tablename=%s'
-    return connection().query_one(_sql,('public',t)) is not None
+    def check_table(self,t):
+        """
+            >>> c = connection()
+            >>> c.check_table('doctest_t1')
+            True
+            >>> c.check_table('nonexistent')
+            False
+        """
+        _sql = 'SELECT tablename FROM pg_tables WHERE schemaname=%s and tablename=%s'
+        return self.query_one(_sql,('public',t)) is not None
 
-def drop_table(t):
-    """
-        >>> create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
-        >>> check_table('doctest_t3')
-        True
-        >>> drop_table('doctest_t3');
-        >>> check_table('doctest_t3')
-        False
-    """
-    connection().execute('DROP TABLE IF EXISTS %s CASCADE' % t)
+    def drop_table(self,t):
+        """
+            >>> c = connection()
+            >>> c.create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
+            >>> c.check_table('doctest_t3')
+            True
+            >>> c.drop_table('doctest_t3');
+            >>> c.check_table('doctest_t3')
+            False
+        """
+        self.execute('DROP TABLE IF EXISTS %s CASCADE' % t)
 
-def create_table(name,schema):
-    """
-        >>> create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
-        >>> check_table('doctest_t3')
-        True
-        >>> drop_table('doctest_t3');
-        >>> check_table('doctest_t3')
-        False
-    """
-    if not check_table(name):
-        connection().execute('CREATE TABLE %s (%s)' % (name,schema))
-
-def init_db(tables):
-    for (name,schema) in tables:
-        create_table(name,schema)
+    def create_table(self,name,schema):
+        """
+            >>> c = connection()
+            >>> c.create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
+            >>> c.check_table('doctest_t3')
+            True
+            >>> c.drop_table('doctest_t3');
+            >>> c.check_table('doctest_t3')
+            False
+        """
+        if not self.check_table(name):
+            self.execute('CREATE TABLE %s (%s)' % (name,schema))
 
 if __name__ == '__main__':
     import code,doctest,sys
@@ -333,21 +332,21 @@ if __name__ == '__main__':
                                doctest_t1_id INTEGER NOT NULL REFERENCES doctest_t1(id)'''),
              )
     # Connect to database and create test tables
-    drop_table('doctest_t1')
-    drop_table('doctest_t2')
-    init_db(tables)
-    db = connection()
-    with db.cursor() as c:
-        for i in range(10):
-            id = c.insert('doctest_t1',{'name':chr(97+i)*5},returning='id')['id']
-            _ = c.insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
+    c = connection()
+    c.drop_table('doctest_t1')
+    c.drop_table('doctest_t2')
+    for (name,schema) in tables:
+        c.create_table(name,schema)
+    for i in range(10):
+        id = c.insert('doctest_t1',{'name':chr(97+i)*5},returning='id')['id']
+        _ = c.insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
     if sys.argv.count('--interact'):
-        enable_logging(sys.stdout)
+        c.log = sys.stdout
         code.interact(local=locals())
     else:
         # Run tests
         doctest.testmod(optionflags=doctest.ELLIPSIS)
     # Drop tables
-    drop_table('doctest_t1')
-    drop_table('doctest_t2')
+    c.drop_table('doctest_t1')
+    c.drop_table('doctest_t2')
 
