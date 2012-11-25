@@ -1,13 +1,15 @@
 
-from db import (enable_logging,enable_hstore,
-                connect,shutdown,
-                cursor,execute,
-                query,query_one,query_dict,
-                select,select_one,select_dict,
-                join,join_one,join_dict,
-                insert,delete,update,
-                check_table,drop_table,create_table,
-                init_db)
+#from db import (enable_logging,enable_hstore,
+#                connect,shutdown,
+#                cursor,execute,
+#                query,query_one,query_dict,
+#                select,select_one,select_dict,
+#                join,join_one,join_dict,
+#                insert,delete,update,
+#                check_table,drop_table,create_table,
+#                init_db)
+
+from db import *
 
 version = "0.4"
 __doc__ = """
