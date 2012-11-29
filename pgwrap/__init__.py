@@ -1,17 +1,7 @@
 
-#from db import (enable_logging,enable_hstore,
-#                connect,shutdown,
-#                cursor,execute,
-#                query,query_one,query_dict,
-#                select,select_one,select_dict,
-#                join,join_one,join_dict,
-#                insert,delete,update,
-#                check_table,drop_table,create_table,
-#                init_db)
+from db import connection
 
-from db import *
-
-version = "0.4"
+version = "0.5"
 __doc__ = """
 
     pgwrap - simple PostgreSQL database wrapper
@@ -43,12 +33,22 @@ __doc__ = """
     -----------
 
     >>> import pgwrap
-    >>> pgwrap.connect(url='postgres://localhost')
-    >>> with pgwrap.cursor() as c:
+    >>> db = pgwrap.connection(url='postgres://localhost')
+    >>> with db.cursor() as c:
     ...     c.query('select version()')
     [{'version': 'PostgreSQL...'}]
-    >>> pgwrap.query_one('select version()')
+    >>> db.query_one('select version()')
     {'version': 'PostgreSQL...'}
+
+    Connection
+    ----------
+
+    The connection class initialises an internal connection pool and provides
+    methods to return a cursor object or execute SQL queries directly (using an
+    implicit cursor).
+
+    The intention is that a single instance of this class is created at
+    application start up and 
 
     Cursor
     ------
@@ -170,3 +170,8 @@ __doc__ = """
         *   0.4     21-10-2012  Add logging support 
 
 """
+
+if __name__ == '__main__':
+    import code,doctest,sys
+    doctest.testmod(optionflags=doctest.ELLIPSIS)
+

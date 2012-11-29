@@ -1,15 +1,20 @@
 
 import logging,os,time,urlparse
+from collections import namedtuple
 import psycopg2
 from psycopg2.extras import RealDictCursor,NamedTupleCursor
 from psycopg2.pool import ThreadedConnectionPool
 
 import sqlop
 
+class RenamingNamedTupleCursor(NamedTupleCursor):
+    def _make_nt(self,namedtuple=namedtuple):
+        return namedtuple("Record", [d[0] for d in self.description or ()],rename=True)
+
 class connection(object):
 
     def __init__(self,url=None,hstore=False,log=None,logf=None,min=1,max=5,
-                               default_cursor=RealDictCursor):
+                               default_cursor=RenamingNamedTupleCursor):
         params = urlparse.urlparse(url or 
                                    os.environ.get('DATABASE_URL') or 
                                    'postgres://localhost/')
@@ -59,7 +64,40 @@ class cursor(object):
         self.log = log
         self.logf = logf
 
+    def _write_log(self,cursor):
+        """
+            >>> db = connection()
+            >>> db.log = sys.stdout
+            >>> _ = db.select('doctest_t1',columns=('name','count'),where={'active':True,'name__gt':'c'})
+            SELECT name, count FROM doctest_t1 WHERE active = true AND name > 'c'
+        """
+        msg = self.logf(cursor)
+        if msg:
+            if isinstance(self.log,logging.Logger):
+                self.log.debug(msg)
+            else:
+                self.log.write(msg + os.linesep)
+
     def __enter__(self):
+        """
+            >>> db = connection()
+            >>> with db.cursor() as c:
+            ...     _ = c.insert('doctest_t1',values={'name':'xxx'})
+            ...     _ = c.insert('doctest_t1',values={'name':'yyy'})
+            ...     _ = c.insert('doctest_t1',values={'name':'zzz'})
+            >>> db.select('doctest_t1',where={'name__~':'[xyz]+'},order=('name',),columns=('name',))
+            [Record(name='xxx'), Record(name='yyy'), Record(name='zzz')]
+            >>> db.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')},returning='name')
+            [Record(name='xxx'), Record(name='yyy'), Record(name='zzz')]
+            >>> with db.cursor() as c:
+            ...     _ = c.insert('doctest_t1',values={'name':'xxx'})
+            ...     c.commit()
+            ...     _ = c.insert('doctest_t1',values={'name':'yyy'})
+            ...     _ = c.insert('doctest_t1',values={'name':'zzz'})
+            ...     c.rollback()
+            >>> db.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')},returning='name')
+            [Record(name='xxx')]
+        """
         self.connection = self.pool.getconn()
         if self.hstore:
             psycopg2.extras.register_hstore(self.connection)
@@ -70,14 +108,6 @@ class cursor(object):
         self.commit()
         self.cursor.close()
         self.pool.putconn(self.connection)
-
-    def _write_log(self,cursor):
-        msg = self.logf(cursor)
-        if msg:
-            if isinstance(self.log,logging.Logger):
-                self.log.debug(msg)
-            else:
-                self.log.write(msg + os.linesep)
 
     def commit(self):
         self.connection.commit()
@@ -95,6 +125,11 @@ class cursor(object):
             return self.cursor.callproc(proc,params)
 
     def execute(self,sql,params=None):
+        """
+            >>> db = connection()
+            >>> db.execute('select name,active FROM doctest_t1')
+            10
+        """
         if self.log and self.logf:
             try:
                 self.cursor.execute(sql,params)
@@ -108,10 +143,10 @@ class cursor(object):
 
     def query(self,sql,params=None):
         """
-            >>> c = connection()
-            >>> r = c.query('select name,active FROM doctest_t1 ORDER BY name')
-            >>> r[0] == {'name':'aaaaa','active':True}
-            True
+            >>> db = connection()
+            >>> r = db.query('select name,active FROM doctest_t1 ORDER BY name')
+            >>> r[0]
+            Record(name='aaaaa', active=True)
             >>> len(r)
             10
         """
@@ -120,26 +155,25 @@ class cursor(object):
 
     def query_one(self,sql,params=None):
         """
-            >>> c = connection()
-            >>> r = c.query_one('select name,active FROM doctest_t1 WHERE name = %s',('aaaaa',))
-            >>> r == {'name':'aaaaa','active':True}
-            True
+            >>> db = connection()
+            >>> db.query_one('select name,active FROM doctest_t1 WHERE name = %s',('aaaaa',))
+            Record(name='aaaaa', active=True)
         """
         self.execute(sql,params)
         return self.cursor.fetchone()
 
     def query_dict(self,sql,key,params=None):
         """
-            >>> c = connection()
-            >>> r = c.query_dict('select name,active FROM doctest_t1 ORDER BY name','name')
-            >>> r['aaaaa'] == {'name':'aaaaa','active':True}
-            True
+            >>> db = connection()
+            >>> r = db.query_dict('select name,active FROM doctest_t1 ORDER BY name','name')
+            >>> r['aaaaa']
+            Record(name='aaaaa', active=True)
             >>> sorted(r.keys())
             ['aaaaa', 'bbbbb', 'ccccc', 'ddddd', 'eeeee', 'fffff', 'ggggg', 'hhhhh', 'iiiii', 'jjjjj']
         """
         _d = {}
         for row in self.query(sql,params):
-            _d[row[key]] = row
+            _d[row.__getattribute__(key)] = row
         return _d
 
     def _build_select(self,table,where,order,columns,limit,offset,update):
@@ -149,34 +183,34 @@ class cursor(object):
 
     def select(self,table,where=None,order=None,columns=None,limit=None,offset=None,update=False):
         """
-            >>> c = connection()
-            >>> c.select('doctest_t1') == c.query('SELECT * FROM doctest_t1')
+            >>> db = connection()
+            >>> db.select('doctest_t1') == db.query('SELECT * FROM doctest_t1')
             True
-            >>> c.select('doctest_t1',columns=('name',),order=('name',),limit=2)
-            [{'name': 'aaaaa'}, {'name': 'bbbbb'}]
-            >>> c.select('doctest_t1',where={'name__in':('aaaaa','bbbbb')},order=('name__desc',)) == \
-                    c.query("SELECT * FROM doctest_t1 WHERE name IN ('aaaaa','bbbbb') ORDER BY name DESC")
+            >>> db.select('doctest_t1',columns=('name',),order=('name',),limit=2)
+            [Record(name='aaaaa'), Record(name='bbbbb')]
+            >>> db.select('doctest_t1',where={'name__in':('aaaaa','bbbbb')},order=('name__desc',)) == \
+                    db.query("SELECT * FROM doctest_t1 WHERE name IN ('aaaaa','bbbbb') ORDER BY name DESC")
             True
-            >>> c.select_one('doctest_t1',columns=('name',),where={'name__in':('bbbbb',)})
-            {'name': 'bbbbb'}
+            >>> db.select_one('doctest_t1',columns=('name',),where={'name__in':('bbbbb',)})
+            Record(name='bbbbb')
         """
         return self.query(self._build_select(table,where,order,columns,limit,offset,update),where)
 
     def select_one(self,table,where=None,order=None,columns=None,limit=None,offset=None,update=False):
         """
-            >>> c = connection()
-            >>> c.select_one('doctest_t1',order=('name',),columns=('name',))
-            {'name': 'aaaaa'}
-            >>> c.select_one('doctest_t1',order=('name',),columns=(('name','_name'),))
-            {'_name': 'aaaaa'}
+            >>> db = connection()
+            >>> db.select_one('doctest_t1',order=('name',),columns=('name',))
+            Record(name='aaaaa')
+            >>> db.select_one('doctest_t1',order=('name',),columns=(('name','abcd'),))
+            Record(abcd='aaaaa')
         """
         return self.query_one(self._build_select(table,where,order,columns,limit,offset,update),where)
 
     def select_dict(self,table,key,where=None,order=None,columns=None,limit=None,offset=None,update=False):
         """
-            >>> c = connection()
-            >>> c.select_dict('doctest_t1','name',columns=('name',),order=('name',),limit=2)
-            {'aaaaa': {'name': 'aaaaa'}, 'bbbbb': {'name': 'bbbbb'}}
+            >>> db = connection()
+            >>> db.select_dict('doctest_t1','name',columns=('name',),order=('name',),limit=2)
+            {'aaaaa': Record(name='aaaaa'), 'bbbbb': Record(name='bbbbb')}
         """
         return self.query_dict(self._build_select(table,where,order,columns,limit,offset,update),key,where)
 
@@ -189,47 +223,47 @@ class cursor(object):
 
     def join(self,tables,where=None,on=None,order=None,columns=None,limit=None,offset=None):
         """
-            >>> c = connection()
-            >>> c.join(('doctest_t1','doctest_t2'),columns=('name','value'),
+            >>> db = connection()
+            >>> db.join(('doctest_t1','doctest_t2'),columns=('name','value'),
             ...             where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
             ...             order=('name',),limit=2)
-            [{'name': 'aaaaa', 'value': 'aa'}, {'name': 'bbbbb', 'value': 'bb'}]
-            >>> c.join(('doctest_t1','doctest_t2'),on=[('doctest_t1.id','doctest_t2.doctest_t1_id')]) \
-                            == c.join(('doctest_t1','doctest_t2'))
+            [Record(name='aaaaa', value='aa'), Record(name='bbbbb', value='bb')]
+            >>> db.join(('doctest_t1','doctest_t2'),on=[('doctest_t1.id','doctest_t2.doctest_t1_id')]) \
+                            == db.join(('doctest_t1','doctest_t2'))
             True
         """
         return self.query(self._build_join(tables,where,on,order,columns,limit,offset),where)
 
     def join_one(self,tables,where=None,on=None,order=None,columns=None,limit=None,offset=None):
         """
-            >>> c = connection()
-            >>> c.join_one(('doctest_t1','doctest_t2'),columns=('name','value'),where={'name':'aaaaa'})
-            {'name': 'aaaaa', 'value': 'aa'}
+            >>> db = connection()
+            >>> db.join_one(('doctest_t1','doctest_t2'),columns=('name','value'),where={'name':'aaaaa'})
+            Record(name='aaaaa', value='aa')
         """
         return self.query_one(self._build_join(tables,where,on,order,columns,limit,offset),where)
 
     def join_dict(self,tables,key,where=None,on=None,order=None,columns=None,limit=None,offset=None):
         """
-            >>> c = connection()
-            >>> c.join_dict(('doctest_t1','doctest_t2'),'name',columns=('name','value'),
-            ...             where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
-            ...             order=('name',),limit=2)
-            {'aaaaa': {'name': 'aaaaa', 'value': 'aa'}, 'bbbbb': {'name': 'bbbbb', 'value': 'bb'}}
+            >>> db = connection()
+            >>> db.join_dict(('doctest_t1','doctest_t2'),'name',columns=('name','value'),
+            ...               where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
+            ...               order=('name',),limit=2)
+            {'aaaaa': Record(name='aaaaa', value='aa'), 'bbbbb': Record(name='bbbbb', value='bb')}
         """
         return self.query_dict(self._build_join(tables,where,on,order,columns,limit,offset),key,where)
 
     def insert(self,table,values,returning=None):
         """
-            >>> c = connection()
-            >>> c.insert('doctest_t1',{'name':'xxx'})
+            >>> db = connection()
+            >>> db.insert('doctest_t1',{'name':'xxx'})
             1
-            >>> c.insert('doctest_t1',{'name':'yyy'},'name')
-            {'name': 'yyy'}
-            >>> c.insert('doctest_t1',values={'name':'zzz'},returning='name')
-            {'name': 'zzz'}
-            >>> c.select('doctest_t1',where={'name__~':'[xyz]+'},order=('name',),columns=('name',))
-            [{'name': 'xxx'}, {'name': 'yyy'}, {'name': 'zzz'}]
-            >>> c.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')})
+            >>> db.insert('doctest_t1',values={'name':'yyy'},returning='name')
+            Record(name='yyy')
+            >>> db.insert('doctest_t1',values={'name':'zzz'},returning='name')
+            Record(name='zzz')
+            >>> db.select('doctest_t1',where={'name__~':'[xyz]+'},order=('name',),columns=('name',))
+            [Record(name='xxx'), Record(name='yyy'), Record(name='zzz')]
+            >>> db.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')})
             3
         """
         _values = [ '%%(%s)s' % v for v in values.keys() ]
@@ -242,13 +276,13 @@ class cursor(object):
 
     def delete(self,table,where=None,returning=None):
         """
-            >>> c = connection()
-            >>> c.insert('doctest_t1',{'name':'xxx'})
+            >>> db = connection()
+            >>> db.insert('doctest_t1',{'name':'xxx'})
             1
-            >>> c.insert('doctest_t1',{'name':'xxx'})
+            >>> db.insert('doctest_t1',{'name':'xxx'})
             1
-            >>> c.delete('doctest_t1',where={'name':'xxx'},returning='name')
-            [{'name': 'xxx'}, {'name': 'xxx'}]
+            >>> db.delete('doctest_t1',where={'name':'xxx'},returning='name')
+            [Record(name='xxx'), Record(name='xxx')]
         """
         sql = 'DELETE FROM %s' % table + sqlop.where(where)
         if returning:
@@ -259,20 +293,20 @@ class cursor(object):
 
     def update(self,table,values,where=None,returning=None):
         """
-            >>> c = connection()
-            >>> c.insert('doctest_t1',{'name':'xxx'})
+            >>> db = connection()
+            >>> db.insert('doctest_t1',{'name':'xxx'})
             1
-            >>> c.update('doctest_t1',{'name':'yyy','active':False},{'name':'xxx'})
+            >>> db.update('doctest_t1',{'name':'yyy','active':False},{'name':'xxx'})
             1
-            >>> c.update('doctest_t1',values={'count__add':1},where={'name':'yyy'},returning='count')
-            [{'count': 1}]
-            >>> c.update('doctest_t1',values={'count__add':1},where={'name':'yyy'},returning='count')
-            [{'count': 2}]
-            >>> c.update('doctest_t1',values={'count__func':'floor(pi()*count)'},where={'name':'yyy'},returning='count')
-            [{'count': 6}]
-            >>> c.update('doctest_t1',values={'count__sub':6},where={'name':'yyy'},returning='count')
-            [{'count': 0}]
-            >>> c.delete('doctest_t1',{'name':'yyy'})
+            >>> db.update('doctest_t1',values={'count__add':1},where={'name':'yyy'},returning='count')
+            [Record(count=1)]
+            >>> db.update('doctest_t1',values={'count__add':1},where={'name':'yyy'},returning='count')
+            [Record(count=2)]
+            >>> db.update('doctest_t1',values={'count__func':'floor(pi()*count)'},where={'name':'yyy'},returning='count')
+            [Record(count=6)]
+            >>> db.update('doctest_t1',values={'count__sub':6},where={'name':'yyy'},returning='count')
+            [Record(count=0)]
+            >>> db.delete('doctest_t1',{'name':'yyy'})
             1
         """
         sql = 'UPDATE %s SET %s' % (table,sqlop.update(values))
@@ -287,10 +321,10 @@ class cursor(object):
 
     def check_table(self,t):
         """
-            >>> c = connection()
-            >>> c.check_table('doctest_t1')
+            >>> db = connection()
+            >>> db.check_table('doctest_t1')
             True
-            >>> c.check_table('nonexistent')
+            >>> db.check_table('nonexistent')
             False
         """
         _sql = 'SELECT tablename FROM pg_tables WHERE schemaname=%s and tablename=%s'
@@ -298,24 +332,24 @@ class cursor(object):
 
     def drop_table(self,t):
         """
-            >>> c = connection()
-            >>> c.create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
-            >>> c.check_table('doctest_t3')
+            >>> db = connection()
+            >>> db.create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
+            >>> db.check_table('doctest_t3')
             True
-            >>> c.drop_table('doctest_t3');
-            >>> c.check_table('doctest_t3')
+            >>> db.drop_table('doctest_t3');
+            >>> db.check_table('doctest_t3')
             False
         """
         self.execute('DROP TABLE IF EXISTS %s CASCADE' % t)
 
     def create_table(self,name,schema):
         """
-            >>> c = connection()
-            >>> c.create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
-            >>> c.check_table('doctest_t3')
+            >>> db = connection()
+            >>> db.create_table('doctest_t3','''id SERIAL PRIMARY KEY, name TEXT''')
+            >>> db.check_table('doctest_t3')
             True
-            >>> c.drop_table('doctest_t3');
-            >>> c.check_table('doctest_t3')
+            >>> db.drop_table('doctest_t3');
+            >>> db.check_table('doctest_t3')
             False
         """
         if not self.check_table(name):
@@ -331,22 +365,24 @@ if __name__ == '__main__':
                                value TEXT NOT NULL,
                                doctest_t1_id INTEGER NOT NULL REFERENCES doctest_t1(id)'''),
              )
-    # Connect to database and create test tables
-    c = connection()
-    c.drop_table('doctest_t1')
-    c.drop_table('doctest_t2')
-    for (name,schema) in tables:
-        c.create_table(name,schema)
-    for i in range(10):
-        id = c.insert('doctest_t1',{'name':chr(97+i)*5},returning='id')['id']
-        _ = c.insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
+    db = connection()
     if sys.argv.count('--interact'):
-        c.log = sys.stdout
+        db.log = sys.stdout
         code.interact(local=locals())
     else:
-        # Run tests
-        doctest.testmod(optionflags=doctest.ELLIPSIS)
-    # Drop tables
-    c.drop_table('doctest_t1')
-    c.drop_table('doctest_t2')
+        try:
+            # Setup tables
+            db.drop_table('doctest_t1')
+            db.drop_table('doctest_t2')
+            for (name,schema) in tables:
+                db.create_table(name,schema)
+            for i in range(10):
+                id = db.insert('doctest_t1',{'name':chr(97+i)*5},returning='id').id
+                _ = db.insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
+            # Run tests
+            doctest.testmod(optionflags=doctest.ELLIPSIS)
+        finally:
+            # Drop tables
+            db.drop_table('doctest_t1')
+            db.drop_table('doctest_t2')
 
