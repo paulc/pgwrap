@@ -2,19 +2,19 @@
 import logging,os,time,urlparse
 from collections import namedtuple
 import psycopg2
-from psycopg2.extras import RealDictCursor,NamedTupleCursor
+from psycopg2.extras import DictCursor,NamedTupleCursor
 from psycopg2.pool import ThreadedConnectionPool
 
 import sqlop
 
-class RenamingNamedTupleCursor(NamedTupleCursor):
+class SafeNamedTupleCursor(NamedTupleCursor):
     def _make_nt(self,namedtuple=namedtuple):
         return namedtuple("Record", [d[0] for d in self.description or ()],rename=True)
 
 class connection(object):
 
     def __init__(self,url=None,hstore=False,log=None,logf=None,min=1,max=5,
-                               default_cursor=RenamingNamedTupleCursor):
+                               default_cursor=DictCursor):
         params = urlparse.urlparse(url or 
                                    os.environ.get('DATABASE_URL') or 
                                    'postgres://localhost/')
@@ -70,6 +70,9 @@ class cursor(object):
             >>> db.log = sys.stdout
             >>> _ = db.select('doctest_t1',columns=('name','count'),where={'active':True,'name__gt':'c'})
             SELECT name, count FROM doctest_t1 WHERE active = true AND name > 'c'
+            >>> db.logf = lambda c : "--- %s ---" % c.query
+            >>> _ = db.select('doctest_t1')
+            --- SELECT * FROM doctest_t1 ---
         """
         msg = self.logf(cursor)
         if msg:
@@ -86,9 +89,9 @@ class cursor(object):
             ...     _ = c.insert('doctest_t1',values={'name':'yyy'})
             ...     _ = c.insert('doctest_t1',values={'name':'zzz'})
             >>> db.select('doctest_t1',where={'name__~':'[xyz]+'},order=('name',),columns=('name',))
-            [Record(name='xxx'), Record(name='yyy'), Record(name='zzz')]
+            [['xxx'], ['yyy'], ['zzz']]
             >>> db.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')},returning='name')
-            [Record(name='xxx'), Record(name='yyy'), Record(name='zzz')]
+            [['xxx'], ['yyy'], ['zzz']]
             >>> with db.cursor() as c:
             ...     _ = c.insert('doctest_t1',values={'name':'xxx'})
             ...     c.commit()
@@ -96,7 +99,7 @@ class cursor(object):
             ...     _ = c.insert('doctest_t1',values={'name':'zzz'})
             ...     c.rollback()
             >>> db.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')},returning='name')
-            [Record(name='xxx')]
+            [['xxx']]
         """
         self.connection = self.pool.getconn()
         if self.hstore:
@@ -118,6 +121,7 @@ class cursor(object):
     def callproc(self,proc,params=None):
         if self.log and self.logf:
             try:
+                self.cursor.timestamp = time.time()
                 return self.cursor.callproc(proc,params)
             finally:
                 self._write_log(self.cursor)
@@ -132,6 +136,7 @@ class cursor(object):
         """
         if self.log and self.logf:
             try:
+                self.cursor.timestamp = time.time()
                 self.cursor.execute(sql,params)
                 return self.cursor.rowcount
             finally:
@@ -146,7 +151,7 @@ class cursor(object):
             >>> db = connection()
             >>> r = db.query('select name,active FROM doctest_t1 ORDER BY name')
             >>> r[0]
-            Record(name='aaaaa', active=True)
+            ['aaaaa', True]
             >>> len(r)
             10
         """
@@ -157,7 +162,7 @@ class cursor(object):
         """
             >>> db = connection()
             >>> db.query_one('select name,active FROM doctest_t1 WHERE name = %s',('aaaaa',))
-            Record(name='aaaaa', active=True)
+            ['aaaaa', True]
         """
         self.execute(sql,params)
         return self.cursor.fetchone()
@@ -167,13 +172,13 @@ class cursor(object):
             >>> db = connection()
             >>> r = db.query_dict('select name,active FROM doctest_t1 ORDER BY name','name')
             >>> r['aaaaa']
-            Record(name='aaaaa', active=True)
+            ['aaaaa', True]
             >>> sorted(r.keys())
             ['aaaaa', 'bbbbb', 'ccccc', 'ddddd', 'eeeee', 'fffff', 'ggggg', 'hhhhh', 'iiiii', 'jjjjj']
         """
         _d = {}
         for row in self.query(sql,params):
-            _d[row.__getattribute__(key)] = row
+            _d[row[key]] = row
         return _d
 
     def _build_select(self,table,where,order,columns,limit,offset,update):
@@ -187,12 +192,12 @@ class cursor(object):
             >>> db.select('doctest_t1') == db.query('SELECT * FROM doctest_t1')
             True
             >>> db.select('doctest_t1',columns=('name',),order=('name',),limit=2)
-            [Record(name='aaaaa'), Record(name='bbbbb')]
+            [['aaaaa'], ['bbbbb']]
             >>> db.select('doctest_t1',where={'name__in':('aaaaa','bbbbb')},order=('name__desc',)) == \
                     db.query("SELECT * FROM doctest_t1 WHERE name IN ('aaaaa','bbbbb') ORDER BY name DESC")
             True
             >>> db.select_one('doctest_t1',columns=('name',),where={'name__in':('bbbbb',)})
-            Record(name='bbbbb')
+            ['bbbbb']
         """
         return self.query(self._build_select(table,where,order,columns,limit,offset,update),where)
 
@@ -200,9 +205,9 @@ class cursor(object):
         """
             >>> db = connection()
             >>> db.select_one('doctest_t1',order=('name',),columns=('name',))
-            Record(name='aaaaa')
+            ['aaaaa']
             >>> db.select_one('doctest_t1',order=('name',),columns=(('name','abcd'),))
-            Record(abcd='aaaaa')
+            ['aaaaa']
         """
         return self.query_one(self._build_select(table,where,order,columns,limit,offset,update),where)
 
@@ -210,7 +215,7 @@ class cursor(object):
         """
             >>> db = connection()
             >>> db.select_dict('doctest_t1','name',columns=('name',),order=('name',),limit=2)
-            {'aaaaa': Record(name='aaaaa'), 'bbbbb': Record(name='bbbbb')}
+            {'aaaaa': ['aaaaa'], 'bbbbb': ['bbbbb']}
         """
         return self.query_dict(self._build_select(table,where,order,columns,limit,offset,update),key,where)
 
@@ -227,7 +232,7 @@ class cursor(object):
             >>> db.join(('doctest_t1','doctest_t2'),columns=('name','value'),
             ...             where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
             ...             order=('name',),limit=2)
-            [Record(name='aaaaa', value='aa'), Record(name='bbbbb', value='bb')]
+            [['aaaaa', 'aa'], ['bbbbb', 'bb']]
             >>> db.join(('doctest_t1','doctest_t2'),on=[('doctest_t1.id','doctest_t2.doctest_t1_id')]) \
                             == db.join(('doctest_t1','doctest_t2'))
             True
@@ -238,7 +243,7 @@ class cursor(object):
         """
             >>> db = connection()
             >>> db.join_one(('doctest_t1','doctest_t2'),columns=('name','value'),where={'name':'aaaaa'})
-            Record(name='aaaaa', value='aa')
+            ['aaaaa', 'aa']
         """
         return self.query_one(self._build_join(tables,where,on,order,columns,limit,offset),where)
 
@@ -248,7 +253,7 @@ class cursor(object):
             >>> db.join_dict(('doctest_t1','doctest_t2'),'name',columns=('name','value'),
             ...               where={'doctest_t1.name__in':('aaaaa','bbbbb','ccccc')},
             ...               order=('name',),limit=2)
-            {'aaaaa': Record(name='aaaaa', value='aa'), 'bbbbb': Record(name='bbbbb', value='bb')}
+            {'aaaaa': ['aaaaa', 'aa'], 'bbbbb': ['bbbbb', 'bb']}
         """
         return self.query_dict(self._build_join(tables,where,on,order,columns,limit,offset),key,where)
 
@@ -258,11 +263,11 @@ class cursor(object):
             >>> db.insert('doctest_t1',{'name':'xxx'})
             1
             >>> db.insert('doctest_t1',values={'name':'yyy'},returning='name')
-            Record(name='yyy')
+            ['yyy']
             >>> db.insert('doctest_t1',values={'name':'zzz'},returning='name')
-            Record(name='zzz')
+            ['zzz']
             >>> db.select('doctest_t1',where={'name__~':'[xyz]+'},order=('name',),columns=('name',))
-            [Record(name='xxx'), Record(name='yyy'), Record(name='zzz')]
+            [['xxx'], ['yyy'], ['zzz']]
             >>> db.delete('doctest_t1',where={'name__in':('xxx','yyy','zzz')})
             3
         """
@@ -282,7 +287,7 @@ class cursor(object):
             >>> db.insert('doctest_t1',{'name':'xxx'})
             1
             >>> db.delete('doctest_t1',where={'name':'xxx'},returning='name')
-            [Record(name='xxx'), Record(name='xxx')]
+            [['xxx'], ['xxx']]
         """
         sql = 'DELETE FROM %s' % table + sqlop.where(where)
         if returning:
@@ -299,13 +304,13 @@ class cursor(object):
             >>> db.update('doctest_t1',{'name':'yyy','active':False},{'name':'xxx'})
             1
             >>> db.update('doctest_t1',values={'count__add':1},where={'name':'yyy'},returning='count')
-            [Record(count=1)]
+            [[1]]
             >>> db.update('doctest_t1',values={'count__add':1},where={'name':'yyy'},returning='count')
-            [Record(count=2)]
+            [[2]]
             >>> db.update('doctest_t1',values={'count__func':'floor(pi()*count)'},where={'name':'yyy'},returning='count')
-            [Record(count=6)]
+            [[6]]
             >>> db.update('doctest_t1',values={'count__sub':6},where={'name':'yyy'},returning='count')
-            [Record(count=0)]
+            [[0]]
             >>> db.delete('doctest_t1',{'name':'yyy'})
             1
         """
@@ -377,7 +382,7 @@ if __name__ == '__main__':
             for (name,schema) in tables:
                 db.create_table(name,schema)
             for i in range(10):
-                id = db.insert('doctest_t1',{'name':chr(97+i)*5},returning='id').id
+                id = db.insert('doctest_t1',{'name':chr(97+i)*5},returning='id')['id']
                 _ = db.insert('doctest_t2',{'value':chr(97+i)*2,'doctest_t1_id':id})
             # Run tests
             doctest.testmod(optionflags=doctest.ELLIPSIS)

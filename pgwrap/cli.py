@@ -1,7 +1,7 @@
 
 import code,sys
-from pgwrap import *
+import pgwrap
         
 if __name__ == '__main__':
-    connect()
+    db = pgwrap.db.connection()
     code.interact(local=locals())

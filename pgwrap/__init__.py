@@ -10,9 +10,9 @@ __doc__ = """
     The 'pgwrap' module provides a simple wrapper over psycopg2 supporting a
     Python API for common sql functions.
 
-    This is not intended to provide an ORM-like functionality, just to make it
-    easier to interact with PostgreSQL from python code for simple use-cases.
-    For more complex operations direct SQL access is available.
+    This is not intended to provide ORM-like functionality, just to make it
+    easier to interact with PostgreSQL from python code for simple use-cases
+    and allow direct SQL access for more complex operations.
     
     The module wraps the excellent 'psycopg2' library and most of the 
     functionality is provided by this behind the scenes.
@@ -26,7 +26,7 @@ __doc__ = """
             * Simple select,update,delete,join methods extending the cursor 
               context handler (also available as stand-alone methods which
               create an implicit cursor for simple queries)
-        * Query results as dict (using psycopg2.extras.RealDictCursor)
+        * Query results as dict (using psycopg2.extras.DictCursor)
         * Logging support
 
     Basic usage
@@ -36,9 +36,14 @@ __doc__ = """
     >>> db = pgwrap.connection(url='postgres://localhost')
     >>> with db.cursor() as c:
     ...     c.query('select version()')
-    [{'version': 'PostgreSQL...'}]
-    >>> db.query_one('select version()')
-    {'version': 'PostgreSQL...'}
+    [['PostgreSQL...']]
+    >>> v = db.query_one('select version()')
+    >>> v
+    ['PostgreSQL...']
+    >>> v.items()
+    [('version', 'PostgreSQL...')]
+    >>> v['version']
+    'PostgreSQL...'
 
     Connection
     ----------
@@ -60,13 +65,14 @@ __doc__ = """
     handler is exited the associated transaction will be committed, cursor
     closed, and the connection released back to the connection pool.
 
-    The cursor object uses the psycopg2 'RealDictCursor' by default (which
-    returns rows as a python dictionary) however this can be overridden by
-    providing a 'cursor_factory' parameter to the constructor.
+    The cursor object uses the psycopg2 'DictCursor' by default (which
+    returns rows as a pseudo python dictionary) however this can be overridden
+    by providing a 'cursor_factory' parameter to the constructor.
 
-    >>> with pgwap.cursor() as c:
+    >>> db = pgwrap.connection(url='postgres://localhost')
+    >>> with db.cursor() as c:
     ...     c.query('select version()')
-    [{'version': 'PostgreSQL...'}]
+    [['PostgreSQL...']]
 
     The cursor context provides the following basic methods:
     
@@ -101,7 +107,7 @@ __doc__ = """
         delete          - SQL delete
 
     The methods can be parameterised to customise the associated query 
-    (see db module docs for detail): 
+    (see db module for detail): 
 
         where           - 'where' clause as dict (column operators can be 
                           specified using the colunm__operator format) 
@@ -135,31 +141,50 @@ __doc__ = """
 
     Basic usage:
 
-        >>> create_table('t1','id serial,name text,count int')
-        >>> create_table('t2','id serial,t1_id int,value text')
-        >>> enable_logging(sys.stdout)
-        >>> insert('t1',{'name':'abc'},returning='id,name')
+        >>> db.create_table('t1','id serial,name text,count int')
+        >>> db.create_table('t2','id serial,t1_id int,value text')
+        >>> db.log = sys.stdout
+        >>> db.insert('t1',{'name':'abc','count':0},returning='id,name')
         INSERT INTO t1 (name) VALUES ('abc') RETURNING id,name
-        {'id': 1, 'name': 'abc'}
-        >>> insert('t2',{'t1_id':1,'value':'t2'})
-        >>> select('t1')
+        [1, 'abc']
+        >>> db.insert('t2',{'t1_id':1,'value':'t2'})
+        INSERT INTO t2 (t1_id,value) VALUES (1,'t2')
+        1
+        >>> db.select('t1')
         SELECT * FROM t1
-        []
-        >>> select_one('t1',where={'name':'abc'},columns=('name','value'))
-        >>> join('t1','t2',where={'t1.id__in':(1,2,3)},columns=('t1.id','t2.name'))
-        >>> insert('t1',{'name':'abc'},returning='id')
-        >>> update('t1',{'name':'xyz'},where={'name':'abc'})
-        >>> update('t1',{'count__func':'count + 1'},where={'count__lt':10},returning="id,count")
-
-
+        [[1, 'abc', 0]]
+        >>> db.select_one('t1',where={'name':'abc'},columns=('name','count'))
+        SELECT name, count FROM t1 WHERE name = 'abc'
+        ['abc', 0]
+        >>> db.join(('t1','t2'),columns=('t1.id','t2.value'))
+        SELECT t1.id, t2.value FROM t1 JOIN t2 ON t1.id = t2.t1_id
+        [[1, 't2']]
+        >>> db.insert('t1',{'name':'abc'},returning='id')
+        INSERT INTO t1 (name) VALUES ('abc') RETURNING id
+        [2]
+        >>> db.update('t1',{'name':'xyz'},where={'name':'abc'})
+        UPDATE t1 SET name = 'xyz' WHERE name = 'abc'
+        2
+        >>> db.update('t1',{'count__func':'count + 1'},where={'count__lt':10},returning="id,count")
+        UPDATE t1 SET count = count + 1 WHERE count < 10 RETURNING id,count
+        [[1, 1]]
 
     Logging
     -------
 
+        To enable logging the connection.log attribute can be set to either an
+        instance of logging.Logger or a file-like object (supporting the write
+        method).
 
+        The log message is generated using the self.logf function (called with 
+        the cursor object as a parameter). By default this just returns the
+        query string however can be customised as needed. A cursor.timestamp
+        attribute is available to allow execution time to be tracked.
 
-                          
-
+        >>> db.log = sys.stdout
+        >>> db.logf = lambda c : '[%f] %s' % (time.time() - c.timestamp,c.query)
+        >>> db.query('SELECT * FROM t1')
+        [0.000536] SELECT * FROM t1
 
     Changelog
     ---------
@@ -168,6 +193,17 @@ __doc__ = """
         *   0.2     20-10-2012  Remove psycopg2 dep in setup.py
         *   0.3     20-10-2012  Remove hstore default for cursor
         *   0.4     21-10-2012  Add logging support 
+        *   0.5     22-12-2012  Refactor connection class / remove globals
+
+    Author
+    ------
+
+        *   Paul Chakravarti (paul.chakravarti@gmail.com)
+
+    Master Repository/Issues
+    ------------------------
+
+        *   https://github.com/paulchakravarti/pgwrap
 
 """
 
