@@ -54,7 +54,7 @@ __doc__ = """
     implicit cursor).
 
     The intention is that a single instance of this class is created at
-    application start up and 
+    application start up.
 
     Cursor
     ------
