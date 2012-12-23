@@ -29,6 +29,32 @@ class connection(object):
         self.log = log
         self.logf = logf or (lambda cursor : cursor.query)
         self.default_cursor = default_cursor
+        self.prepared_statement_id = 0
+
+    def prepare(self,statement,params=None,name=None):
+        """
+            >>> db = connection()
+            >>> p1 = db.prepare('SELECT name FROM doctest_t1 WHERE id = $1')
+            >>> p2 = db.prepare('UPDATE doctest_t1 set name = $2 WHERE id = $1',('int','text'))
+            >>> db.execute(p2,(1,'xxxxx'))
+            1
+            >>> db.query_one(p1,(1,))
+            ['xxxxx']
+            >>> db.execute(p2,(1,'aaaaa'))
+            1
+            >>> db.query_one(p1,(1,))
+            ['aaaaa']
+        """
+        if not name:
+            self.prepared_statement_id += 1
+            name = '_pstmt_%03.3d' % self.prepared_statement_id
+        if params:
+            params = '(' + ','.join(params) + ')'
+        else:
+            params = ''
+        with self.cursor() as c:
+            c.execute('PREPARE %s %s AS %s' % (name,params,statement))
+        return PreparedStatement(name)
 
     def shutdown(self):
         if self.pool:
@@ -134,6 +160,11 @@ class cursor(object):
             >>> db.execute('select name,active FROM doctest_t1')
             10
         """
+        if isinstance(sql,PreparedStatement):
+            if params:
+                sql = 'EXECUTE %s (%s)' % (sql.name,','.join(['%s']*len(params)))
+            else:
+                sql = 'EXECUTE %s' % sql.name
         if self.log and self.logf:
             try:
                 self.cursor.timestamp = time.time()
@@ -144,7 +175,6 @@ class cursor(object):
         else:
             self.cursor.execute(sql,params)
             return self.cursor.rowcount
-
 
     def query(self,sql,params=None):
         """
@@ -359,6 +389,11 @@ class cursor(object):
         """
         if not self.check_table(name):
             self.execute('CREATE TABLE %s (%s)' % (name,schema))
+
+class PreparedStatement(object):
+
+    def __init__(self,name):
+        self.name = name
 
 if __name__ == '__main__':
     import code,doctest,sys
