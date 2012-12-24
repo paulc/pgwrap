@@ -31,7 +31,7 @@ class connection(object):
         self.default_cursor = default_cursor
         self.prepared_statement_id = 0
 
-    def prepare(self,statement,params=None,name=None):
+    def prepare(self,statement,params=None,name=None,response='multi'):
         """
             >>> db = connection()
             >>> p1 = db.prepare('SELECT name FROM doctest_t1 WHERE id = $1')
@@ -54,7 +54,7 @@ class connection(object):
             params = ''
         with self.cursor() as c:
             c.execute('PREPARE %s %s AS %s' % (name,params,statement))
-        return PreparedStatement(name)
+        return PreparedStatement(self,name,response)
 
     def shutdown(self):
         if self.pool:
@@ -392,8 +392,33 @@ class cursor(object):
 
 class PreparedStatement(object):
 
-    def __init__(self,name):
+    def __init__(self,connection,name,response='multi'):
+        self.connection = connection
         self.name = name
+        self.response = response
+
+    def deallocate(self):
+        self.connection.execute('DEALLOCATE %s' % self.name)
+
+    def execute(self,*params):
+        return self.connection.execute(self,params)
+
+    def query(self,*params):
+        return self.connection.query(self,params)
+
+    def query_one(self,*params):
+        return self.connection.query_one(self,params)
+
+    def query_dict(self,*params):
+        return self.connection.query_dict(self,params)
+
+    def __call__(self,*params):
+        if self.response == 'multi':
+            return self.connection.query(self,params)
+        elif self.response == 'single':
+            return self.connection.query_one(self,params)
+        else:
+            return self.connection.execute(self,params)
 
 if __name__ == '__main__':
     import code,doctest,sys
