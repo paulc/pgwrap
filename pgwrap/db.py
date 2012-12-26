@@ -31,7 +31,7 @@ class connection(object):
         self.default_cursor = default_cursor
         self.prepared_statement_id = 0
 
-    def prepare(self,statement,params=None,name=None,response='multi'):
+    def prepare(self,statement,params=None,name=None,call_type=None):
         """
             >>> db = connection()
             >>> p1 = db.prepare('SELECT name FROM doctest_t1 WHERE id = $1')
@@ -54,7 +54,12 @@ class connection(object):
             params = ''
         with self.cursor() as c:
             c.execute('PREPARE %s %s AS %s' % (name,params,statement))
-        return PreparedStatement(self,name,response)
+        if call_type is None:
+            if statement.lower().startswith('select'):
+                call_type = 'query'
+            else:
+                call_type = 'execute'
+        return PreparedStatement(self,name,call_type)
 
     def shutdown(self):
         if self.pool:
@@ -107,7 +112,7 @@ class cursor(object):
             else:
                 self.log.write(msg + os.linesep)
 
-    def __enter__(self):
+    def __enter__(self,name=None):
         """
             >>> db = connection()
             >>> with db.cursor() as c:
@@ -128,9 +133,9 @@ class cursor(object):
             [['xxx']]
         """
         self.connection = self.pool.getconn()
+        self.cursor = self.connection.cursor(name=name,cursor_factory=self.cursor_factory)
         if self.hstore:
-            psycopg2.extras.register_hstore(self.connection)
-        self.cursor = self.connection.cursor(cursor_factory=self.cursor_factory)
+            psycopg2.extras.register_hstore(self.cursor)
         return self
 
     def __exit__(self,type,value,traceback):
@@ -143,16 +148,6 @@ class cursor(object):
 
     def rollback(self):
         self.connection.rollback()
-
-    def callproc(self,proc,params=None):
-        if self.log and self.logf:
-            try:
-                self.cursor.timestamp = time.time()
-                return self.cursor.callproc(proc,params)
-            finally:
-                self._write_log(self.cursor)
-        else:
-            return self.cursor.callproc(proc,params)
 
     def execute(self,sql,params=None):
         """
@@ -392,10 +387,10 @@ class cursor(object):
 
 class PreparedStatement(object):
 
-    def __init__(self,connection,name,response='multi'):
+    def __init__(self,connection,name,call_type='query'):
         self.connection = connection
         self.name = name
-        self.response = response
+        self.call_type = call_type
 
     def deallocate(self):
         self.connection.execute('DEALLOCATE %s' % self.name)
@@ -409,16 +404,11 @@ class PreparedStatement(object):
     def query_one(self,*params):
         return self.connection.query_one(self,params)
 
-    def query_dict(self,*params):
-        return self.connection.query_dict(self,params)
+    def query_dict(self,key,*params):
+        return self.connection.query_dict(self,key,params)
 
     def __call__(self,*params):
-        if self.response == 'multi':
-            return self.connection.query(self,params)
-        elif self.response == 'single':
-            return self.connection.query_one(self,params)
-        else:
-            return self.connection.execute(self,params)
+        return getattr(self.connection,self.call_type)(self,params)
 
 if __name__ == '__main__':
     import code,doctest,sys
