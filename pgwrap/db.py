@@ -1,11 +1,15 @@
 
-import logging,os,time,urlparse
+import logging,os,time
+try:
+    from urllib.parse import urlparse, parse_qs
+except ImportError:
+    from urlparse import urlparse, parse_qs
 from collections import namedtuple
 import psycopg2
 from psycopg2.extras import DictCursor,NamedTupleCursor
 from psycopg2.pool import ThreadedConnectionPool
 
-import sqlop
+import pgwrap.sqlop as sqlop
 
 class SafeNamedTupleCursor(NamedTupleCursor):
     def _make_nt(self,namedtuple=namedtuple):
@@ -15,19 +19,22 @@ class connection(object):
 
     def __init__(self,url=None,hstore=False,log=None,logf=None,min=1,max=5,
                                default_cursor=DictCursor):
-        params = urlparse.urlparse(url or 
-                                   os.environ.get('DATABASE_URL') or 
-                                   'postgres://localhost/')
+        params = urlparse(url or 
+                          os.environ.get('DATABASE_URL') or 
+                          'postgres://localhost/')
+        if params.scheme != 'postgres':
+            raise ValueError("Invalid connection string (postgres://user@pass:host/db?param=value)")
+
         self.pool = ThreadedConnectionPool(min,max,
-                                           database=params.path[1:],
-                                           user=params.username,
-                                           password=params.password,
-                                           host=params.hostname,
-                                           port=params.port,
+                                           database=params.path[1:] or parse_qs(params.query).get('dbname'),
+                                           user=params.username or parse_qs(params.query).get('user'),
+                                           password=params.password or parse_qs(params.query).get('password'),
+                                           host=params.hostname or parse_qs(params.query).get('host'),
+                                           port=params.port or parse_qs(params.query).get('port'),
                     )
         self.hstore = hstore
         self.log = log
-        self.logf = logf or (lambda cursor : cursor.query)
+        self.logf = logf or (lambda cursor : cursor.query.decode())
         self.default_cursor = default_cursor
         self.prepared_statement_id = 0
 
@@ -101,7 +108,7 @@ class cursor(object):
             >>> db.log = sys.stdout
             >>> _ = db.select('doctest_t1',columns=('name','count'),where={'active':True,'name__gt':'c'})
             SELECT name, count FROM doctest_t1 WHERE active = true AND name > 'c'
-            >>> db.logf = lambda c : "--- %s ---" % c.query
+            >>> db.logf = lambda c : "--- %s ---" % c.query.decode()
             >>> _ = db.select('doctest_t1')
             --- SELECT * FROM doctest_t1 ---
         """
@@ -340,9 +347,9 @@ class cursor(object):
             1
         """
         sql = 'UPDATE %s SET %s' % (table,sqlop.update(values))
-        sql = self.cursor.mogrify(sql,values)
+        sql = self.cursor.mogrify(sql,values).decode()
         if where:
-            sql += self.cursor.mogrify(sqlop.where(where),where)
+            sql += self.cursor.mogrify(sqlop.where(where),where).decode()
         if returning:
             sql += ' RETURNING %s' % returning
             return self.query(sql)

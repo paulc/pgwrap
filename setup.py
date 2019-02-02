@@ -5,9 +5,9 @@ try:
 except ImportError:
     from distutils.core import Command,setup
 
-version = "0.7"
-description = 'Simple PostgreSQL database wrapper - provides wrapper over psycopg2 supporting a Python API for common sql functions'
-long_description = file("README").read()
+version = "0.8"
+description = 'Simple PostgreSQL database wrapper - provides wrapper over psycopg2 supporting a Python API for common sql functions (supports py2/py3'
+long_description = open("README").read()
 
 class GenerateReadme(Command):
     description = "Generates README file"
@@ -30,5 +30,8 @@ setup(name='pgwrap',
       packages = ['pgwrap'],
       install_requires = ['psycopg2'],
       license = 'BSD',
-      classifiers = [ "Topic :: Database" ]
+      classifiers = [ "Topic :: Database",
+                      "Programming Language :: Python :: 2",
+                      "Programming Language :: Python :: 3",
+                    ]
      )

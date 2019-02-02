@@ -1,7 +1,7 @@
 
-from db import connection
+#from .db import connection
 
-version = "0.7"
+version = "0.8"
 __doc__ = """
 
     pgwrap - simple PostgreSQL database wrapper
@@ -29,6 +29,7 @@ __doc__ = """
         * Query results as dict (using psycopg2.extras.DictCursor)
         * Callable prepared statements
         * Logging support
+        * Supports Python 2/3
 
     Basic usage
     -----------
@@ -233,6 +234,7 @@ __doc__ = """
         *   0.5     22-12-2012  Refactor connection class / remove globals
         *   0.6     23-12-2012  Add support for prepared statements
         *   0.7     26-12-2012  Add callable prepared statements & named cursor
+        *   0.8     02-02-2019  Support Python 3 (finally)
 
     Author
     ------

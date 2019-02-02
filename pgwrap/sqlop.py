@@ -58,12 +58,13 @@ def order(order):
 
 def columns(columns):
     if columns:
-        return ", ".join([(c if isinstance(c,(str,unicode)) 
+        return ", ".join([(c if isinstance(c,type("")) 
                                 else "%s AS %s" % c) for c in columns])
     else:
         return '*'
 
-def on((t1,t2),on):
+def on(tables,on):
+    t1,t2 = tables
     if on:
         return "%s = %s" % on
     else:
