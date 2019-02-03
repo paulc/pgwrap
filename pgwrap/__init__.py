@@ -1,7 +1,7 @@
 
 #from .db import connection
 
-version = "0.8"
+version = "0.8.1"
 __doc__ = """
 
     pgwrap - simple PostgreSQL database wrapper

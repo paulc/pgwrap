@@ -6,7 +6,7 @@ except ImportError:
     from urlparse import urlparse, parse_qs
 from collections import namedtuple
 import psycopg2
-from psycopg2.extras import DictCursor,NamedTupleCursor
+from psycopg2.extras import DictCursor,DictRow,NamedTupleCursor
 from psycopg2.pool import ThreadedConnectionPool
 
 import pgwrap.sqlop as sqlop
@@ -14,6 +14,18 @@ import pgwrap.sqlop as sqlop
 class SafeNamedTupleCursor(NamedTupleCursor):
     def _make_nt(self,namedtuple=namedtuple):
         return namedtuple("Record", [d[0] for d in self.description or ()],rename=True)
+
+class AttrDictRow(DictRow):
+    def __init__(self, *args, **kwargs):
+        super(AttrDictRow, self).__init__(*args, **kwargs)
+    def __getattr__(self,attr):
+        return self.__getitem__(attr)
+
+class AttrDictCursor(DictCursor):
+    def __init__(self, *args, **kwargs):
+        kwargs['row_factory'] = AttrDictRow
+        super(DictCursor, self).__init__(*args, **kwargs)
+        self._prefetch = 1
 
 class connection(object):
 

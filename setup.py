@@ -5,8 +5,8 @@ try:
 except ImportError:
     from distutils.core import Command,setup
 
-version = "0.8"
-description = 'Simple PostgreSQL database wrapper - provides wrapper over psycopg2 supporting a Python API for common sql functions (supports py2/py3'
+version = "0.8.1"
+description = 'Simple PostgreSQL database wrapper - provides wrapper over psycopg2 supporting a Python API for common sql functions (supports py2/py3)'
 long_description = open("README").read()
 
 class GenerateReadme(Command):
